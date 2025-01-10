@@ -53,11 +53,13 @@ def process_all_years(repo_path: Path):
     cache_dir = mktemp_cache_dir(id_path=repo_id)
     dataset_cache_path = partial(make_cache_path, cache_dir=cache_dir)
 
-    for path in tqdm(sorted(ld_dir.glob("**/html-embedded-jsonld.list"))):
-        print(f"Full path: {path}")
+    wdc_releases = sorted(ld_dir.glob("**/html-embedded-jsonld.list"))
+    for path in tqdm(release_paths):
+        # print(f"Full path: {path}")
         rel = path.relative_to(ld_dir)
-        print(f"Parts: {rel.parts}")
+        # print(f"Parts: {rel.parts}")
         subset = rel.parts[0]
+        print(f"Processing subset: {subset}")
 
         try:
             if ds_subset_exists(result_dataset_id, subset):
@@ -90,9 +92,14 @@ def process_all_years(repo_path: Path):
                 parquet_cache_chunk = process_subset_chunk(url)
                 pq_caches.append(parquet_cache_chunk)
 
+            def stream_pq_files():
+                for pq_chunk in pq_caches:
+                    yield from pl.read_parquet(pq_chunk).to_dicts()
+
             # Reload once all parts completed and upload
-            aggregator = pl.read_parquet(pq_caches)
-            dataset = Dataset.from_dict(aggregator.to_dict(as_series=False))
+            # --!-- Cannot load all into RAM! --!--
+            # aggregator = pl.read_parquet(pq_caches)
+            dataset = Dataset.from_generator(generator=stream_pq_files)
             dataset.push_to_hub(
                 result_dataset_id,
                 config_name=subset,
