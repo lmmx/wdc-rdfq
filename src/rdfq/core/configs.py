@@ -4,7 +4,7 @@ import polars as pl
 from datasets import load_dataset_builder
 from huggingface_hub import list_repo_files
 
-from bbcfw.core.caching import make_cache_path, mktemp_cache_dir
+from rdfq.core.caching import make_cache_path, mktemp_cache_dir
 
 
 def map_file_configs(dataset_id: str) -> pl.DataFrame:
