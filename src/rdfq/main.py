@@ -54,7 +54,7 @@ def process_all_years(repo_path: Path):
     dataset_cache_path = partial(make_cache_path, cache_dir=cache_dir)
 
     wdc_releases = sorted(ld_dir.glob("**/html-embedded-jsonld.list"))
-    for path in tqdm(release_paths):
+    for path in tqdm(wdc_releases):
         # print(f"Full path: {path}")
         rel = path.relative_to(ld_dir)
         # print(f"Parts: {rel.parts}")
