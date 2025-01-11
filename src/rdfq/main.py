@@ -40,7 +40,7 @@ nq_pat = (
     r"<[^>]+>|"  # IRI
     r"_:[\w-]+"  # Blank node
     r")\s+"
-    r"(?P<graph><[^>]+>|_:[\w-]+)?"  # Graph: Optional IRI or blank node
+    r"(?P<graph><[^>]+>|_:[\w-]+)"  # Graph: IRI or blank node
     r"\s*\."  # Full stop
 )
 parse_line = pl.col("*").str.extract_groups(nq_pat).struct.unnest()
@@ -65,6 +65,12 @@ def ds_subset_exists(dataset_id: str, subset_name: str) -> bool:
             return False
         else:
             raise
+
+
+def check_result(df: pl.DataFrame) -> None:
+    """If any of the columns have nulls, quit the program."""
+    total_nulls = (nc := df.null_count()).select(pl.sum_horizontal("*")).item()
+    assert total_nulls == 0, f"Nulls detected, regex may have a bug:\n{nc}"
 
 
 def process_all_years(repo_path: Path):
@@ -106,10 +112,7 @@ def process_all_years(repo_path: Path):
                     df = pl.read_csv(
                         source_url, separator="\n", has_header=False, comment_prefix="#"
                     ).select(parse_line)
-                    nc = df.null_count()
-                    assert (
-                        nc.select(pl.sum_horizontal("*")).item() == 0
-                    ), f"Nulls detected in {source_url}, regex may have a bug:\n{nc}"
+                    check_result(df)
                     df.write_parquet(parquet_cache_chunk)
                 return parquet_cache_chunk
 
