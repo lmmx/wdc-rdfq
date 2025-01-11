@@ -146,7 +146,9 @@ def process_all_years(repo_path: Path):
             if subset_log.exists():
                 formatted_entry = subset_log.read_text() + "\n\n\n" + formatted_entry
             subset_log.write_text(formatted_entry)
-            continue
+            # Do not continue in case the cache needs to be manually cleared
+            print("Halting to avoid creating multiple large Arrow caches")
+            raise  # raise
 
 
 if __name__ == "__main__":
