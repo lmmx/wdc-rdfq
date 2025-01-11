@@ -1,7 +1,8 @@
 import multiprocessing as mp
 import subprocess
+import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 
@@ -120,12 +121,15 @@ def process_all_years(repo_path: Path):
                 cache_dir=subset_arrow_cache_dir,  # 300GB+ of Arrow files per subset
             )
             print(f"Made the dataset: {dataset}")
+            push_start_t = time.time()
             dataset.push_to_hub(
                 result_dataset_id,
                 config_name=subset,
                 private=False,
             )
-            print(f"Successfully processed and uploaded {subset}")
+            push_end_t = time.time()
+            elapsed = timedelta(seconds=int(push_end_t - push_start_t))
+            print(f"Successfully processed and uploaded {subset} in {elapsed}")
             # Ensure we are definitely only deleting the parquet directory and .lock files
             assert {"parquet"} == {
                 f.name for f in subset_arrow_cache_dir.iterdir() if f.suffix != ".lock"
