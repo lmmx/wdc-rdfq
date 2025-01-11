@@ -72,7 +72,7 @@ def process_all_years(repo_path: Path):
             pq_caches = []
 
             def process_subset_chunk(source_url: str) -> Path:
-                parquet_cache_chunk = dataset_cache_path(source_url)
+                parquet_cache_chunk = dataset_cache_path(str(rel))
                 if parquet_cache_chunk.exists():
                     try:
                         # Verify we can read the cached file
