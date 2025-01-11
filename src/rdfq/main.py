@@ -1,4 +1,7 @@
+import multiprocessing as mp
 import subprocess
+import traceback
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 
@@ -18,6 +21,14 @@ result_dataset_name = "wdc-common-crawl-embedded-jsonld"
 result_dataset_id = f"{username}/{result_dataset_name}"
 repo_id = "wbsg-uni-mannheim/wdc-page"
 REPO_URL = f"https://github.com/{repo_id}.git"
+
+n_cpus = mp.cpu_count()
+# If set, use `non_tmp_cache_dir` instead of /tmp for repo and intermediate pq files
+non_tmp_cache_dir = Path.home() / ".cache" / "wdc-files"
+non_tmp_cache_dir.mkdir(exist_ok=True)
+# Make a specific dataset parquet cache dir to clear after an upload finishes (or fails)
+dataset_pq_cache_dir = non_tmp_cache_dir / "ds-pq-store"
+dataset_pq_cache_dir.mkdir(exist_ok=True)
 
 # WDC use "a variation on the n-quads format" (.nq), like n-triples but with 4 fields
 nq_pat = (
@@ -46,11 +57,17 @@ def ds_subset_exists(dataset_id: str, subset_name: str) -> bool:
         return subset_name in get_dataset_config_names(dataset_id)
     except DatasetNotFoundError:
         return False
+    except Exception as e:
+        if "doesn't contain any data files" in str(e):
+            # Dataset found but blank repo
+            return False
+        else:
+            raise
 
 
 def process_all_years(repo_path: Path):
     ld_dir = repo_path / "structureddata"
-    cache_dir = mktemp_cache_dir(id_path=repo_id)
+    cache_dir = mktemp_cache_dir(id_path=repo_id, base_dir=non_tmp_cache_dir)
     dataset_cache_path = partial(make_cache_path, cache_dir=cache_dir)
 
     wdc_releases = sorted(ld_dir.glob("**/html-embedded-jsonld.list"))
@@ -92,14 +109,21 @@ def process_all_years(repo_path: Path):
                 parquet_cache_chunk = process_subset_chunk(url)
                 pq_caches.append(parquet_cache_chunk)
 
-            def stream_pq_files():
-                for pq_chunk in pq_caches:
-                    yield from pl.read_parquet(pq_chunk).to_dicts()
+            # def stream_pq_files():
+            #     for pq_chunk in pq_caches:
+            #         yield from pl.read_parquet(pq_chunk).to_dicts()
+
+            # dataset = Dataset.from_generator(generator=stream_pq_files)
 
             # Reload once all parts completed and upload
             # --!-- Cannot load all into RAM! --!--
             # aggregator = pl.read_parquet(pq_caches)
-            dataset = Dataset.from_generator(generator=stream_pq_files)
+            dataset = Dataset.from_parquet(
+                list(map(str, pq_caches)),
+                num_proc=n_cpus,
+                cache_dir=dataset_pq_cache_dir,
+            )
+            print(f"Made the dataset: {dataset}")
             dataset.push_to_hub(
                 result_dataset_id,
                 config_name=subset,
@@ -111,7 +135,16 @@ def process_all_years(repo_path: Path):
             print("\nShutting down - current subset incomplete")
             return
         except Exception as e:
-            print(f"\nError processing {subset}: {str(e)}")
+            subset_log = cache_dir / f"{subset}.log"
+            print(
+                f"\nError processing {subset}: {str(e)} (see {subset_log} for traceback)"
+            )
+            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            formatted_entry = f"Date: {current_date}\n\n{tb}"
+            if subset_log.exists():
+                formatted_entry = subset_log.read_text() + "\n\n\n" + formatted_entry
+            subset_log.write_text(formatted_entry)
             continue
 
 
