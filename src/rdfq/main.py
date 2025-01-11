@@ -35,10 +35,11 @@ dataset_pq_cache_dir.mkdir(exist_ok=True)
 nq_pat = (
     r"(?P<subject><[^>]+>|_:[\w-]+)\s+"  # Subject: IRI or blank node
     r"(?P<predicate><[^>]+>)\s+"  # Predicate: IRI
-    # r'(?:"(?P<object_literal>[^"\\\\]*(?:\\\\.[^"\\\\]*)*)"'  # Object: Literal value
-    # r"(?:\^\^(?P<object_datatype><[^>]+>))?|(?P<object_iri><[^>]+>)|(?P<object_blank>_:[\w-]+))\s+"
-    r'(?P<object>"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"'  # Object: Literal with optional datatype
-    r"(?:\^\^<[^>]+>)?|<[^>]+>|_:[\w-]+)\s+"  # OR: IRI or blank node
+    r"(?P<object>"  # Object can be one of:
+    r'"[^"]*(?:\\.[^"]*)*"(?:\^\^<[^>]+>)?|'  # Literal with optional datatype
+    r"<[^>]+>|"  # IRI
+    r"_:[\w-]+"  # Blank node
+    r")\s+"
     r"(?P<graph><[^>]+>|_:[\w-]+)?"  # Graph: Optional IRI or blank node
     r"\s*\."  # Full stop
 )
@@ -105,6 +106,10 @@ def process_all_years(repo_path: Path):
                     df = pl.read_csv(
                         source_url, separator="\n", has_header=False, comment_prefix="#"
                     ).select(parse_line)
+                    nc = df.null_count()
+                    assert (
+                        nc.select(pl.sum_horizontal("*")).item() == 0
+                    ), f"Nulls detected in {source_url}, regex may have a bug:\n{nc}"
                     df.write_parquet(parquet_cache_chunk)
                 return parquet_cache_chunk
 
