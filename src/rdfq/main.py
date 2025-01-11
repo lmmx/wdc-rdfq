@@ -77,6 +77,8 @@ def process_all_years(repo_path: Path):
         # print(f"Parts: {rel.parts}")
         subset = rel.parts[0]
         print(f"Processing subset: {subset}")
+        subset_arrow_cache_dir = dataset_pq_cache_dir / subset
+        subset_arrow_cache_dir.mkdir(exist_ok=True)
 
         try:
             if ds_subset_exists(result_dataset_id, subset):
@@ -109,19 +111,13 @@ def process_all_years(repo_path: Path):
                 parquet_cache_chunk = process_subset_chunk(url)
                 pq_caches.append(parquet_cache_chunk)
 
-            # def stream_pq_files():
-            #     for pq_chunk in pq_caches:
-            #         yield from pl.read_parquet(pq_chunk).to_dicts()
-
-            # dataset = Dataset.from_generator(generator=stream_pq_files)
-
             # Reload once all parts completed and upload
             # --!-- Cannot load all into RAM! --!--
             # aggregator = pl.read_parquet(pq_caches)
             dataset = Dataset.from_parquet(
                 list(map(str, pq_caches)),
                 num_proc=n_cpus,
-                cache_dir=dataset_pq_cache_dir,
+                cache_dir=subset_arrow_cache_dir,  # 300GB+ of Arrow files per subset
             )
             print(f"Made the dataset: {dataset}")
             dataset.push_to_hub(
@@ -130,6 +126,11 @@ def process_all_years(repo_path: Path):
                 private=False,
             )
             print(f"Successfully processed and uploaded {subset}")
+            # Ensure we are definitely only deleting the parquet directory and .lock files
+            assert {"parquet"} == {
+                f.name for f in subset_arrow_cache_dir.iterdir() if f.suffix != ".lock"
+            }
+            shutil.rmtree(subset_arrow_cache_dir)
 
         except KeyboardInterrupt:
             print("\nShutting down - current subset incomplete")
