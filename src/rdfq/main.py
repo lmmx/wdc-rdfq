@@ -105,8 +105,8 @@ def process_all_years(repo_path: Path):
         try:
             if ds_subset_exists(result_dataset_id, subset):
                 print(f"Skipping {subset}")
-                shutil.rmtree(subset_parquet_cache_dir)
-                shutil.rmtree(subset_arrow_cache_dir)
+                shutil.rmtree(subset_cache_dir)  # subset_parquet_cache_dir
+                shutil.rmtree(subset_ext_c_dir)  # subset_arrow_cache_dir
                 continue
 
             urls_df = pl.read_csv(
@@ -169,8 +169,8 @@ def process_all_years(repo_path: Path):
             assert {"parquet"} == {
                 f.name for f in subset_arrow_cache_dir.iterdir() if f.suffix != ".lock"
             }
-            shutil.rmtree(subset_parquet_cache_dir)
-            shutil.rmtree(subset_arrow_cache_dir)
+            shutil.rmtree(subset_cache_dir)  # subset_parquet_cache_dir
+            shutil.rmtree(subset_ext_c_dir)  # subset_arrow_cache_dir
 
         except KeyboardInterrupt:
             print("\nShutting down - current subset incomplete")
