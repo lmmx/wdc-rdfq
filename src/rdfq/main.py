@@ -111,16 +111,12 @@ def process_all_years(repo_path: Path):
                         raise
                 else:
                     print(f"\nProcessing {source_url}")
-                    df = (
-                        pl.scan_csv(
-                            source_url,
-                            separator="\n",
-                            has_header=False,
-                            comment_prefix="#",
-                        )
-                        .select(parse_line)
-                        .collect()
-                    )
+                    df = pl.read_csv(
+                        source_url,
+                        separator="\n",
+                        has_header=False,
+                        comment_prefix="#",
+                    ).select(parse_line)
                     ensure_no_nulls(df)
                     df.write_parquet(parquet_cache_chunk)
                 return parquet_cache_chunk
