@@ -138,7 +138,7 @@ def process_all_years(repo_path: Path):
                     df.write_parquet(parquet_cache_chunk)
                 return parquet_cache_chunk
 
-            for url in tqdm(list(urls_df.head()["url"])):
+            for url in tqdm(list(urls_df["url"])):
                 parquet_cache_chunk = process_subset_chunk(url)
                 pq_caches.append(parquet_cache_chunk)
 
