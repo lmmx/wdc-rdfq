@@ -37,7 +37,7 @@ nq_pat = (
     r"(?P<subject><[^>]+>|_:[\w-]+)\s+"  # Subject: IRI or blank node
     r"(?P<predicate><[^>]+>)\s+"  # Predicate: IRI
     r"(?P<object>"  # Object can be one of:
-    r'"[^"]*(?:\\.[^"]*)*"(?:@[a-zA-Z-]+|\^\^<[^>]+>)?|'  # Literal with optional language tag or datatype
+    r'"[^"]*(?:\\.[^"]*)*"(?:@[a-zA-Z-]+|@\*|\^\^<[^>]+>)?|'  # Literal with optional language tag (including @*) or datatype
     r"<[^>]+>|"  # IRI
     r"_:[\w-]+"  # Blank node
     r")\s+"
@@ -77,7 +77,7 @@ def ensure_no_nulls(df: pl.DataFrame) -> None:
 def process_all_years(repo_path: Path):
     ld_dir = repo_path / "structureddata"
     cache_dir = mktemp_cache_dir(id_path=repo_id, base_dir=non_tmp_cache_dir)
-    dataset_cache_path = partial(make_cache_path, cache_dir=cache_dir)
+    # dataset_cache_path = partial(make_cache_path, cache_dir=cache_dir)
 
     wdc_releases = sorted(ld_dir.glob("**/html-embedded-jsonld.list"))
     for path in tqdm(wdc_releases):
@@ -86,8 +86,11 @@ def process_all_years(repo_path: Path):
         # print(f"Parts: {rel.parts}")
         subset = rel.parts[0]
         print(f"Processing subset: {subset}")
-        subset_arrow_cache_dir = dataset_pq_cache_dir / subset
-        subset_arrow_cache_dir.mkdir(exist_ok=True)
+
+        (subset_cache_dir := dataset_pq_cache_dir / subset).mkdir(exist_ok=True)
+        (subset_arrow_cache_dir := subset_cache_dir / "arrow").mkdir(exist_ok=True)
+        (subset_parquet_cache_dir := subset_cache_dir / "parquet").mkdir(exist_ok=True)
+        ss_pq_cache_path = partial(make_cache_path, cache_dir=subset_parquet_cache_dir)
 
         try:
             if ds_subset_exists(result_dataset_id, subset):
@@ -100,7 +103,8 @@ def process_all_years(repo_path: Path):
             pq_caches = []
 
             def process_subset_chunk(source_url: str) -> Path:
-                parquet_cache_chunk = dataset_cache_path(str(rel))
+                fname = Path(source_url).name
+                parquet_cache_chunk = ss_pq_cache_path(fname)
                 if parquet_cache_chunk.exists():
                     try:
                         # Verify we can read the cached file
@@ -121,19 +125,25 @@ def process_all_years(repo_path: Path):
                     df.write_parquet(parquet_cache_chunk)
                 return parquet_cache_chunk
 
-            for url in tqdm(list(urls_df["url"])):
+            for url in tqdm(list(urls_df.head()["url"])):
                 parquet_cache_chunk = process_subset_chunk(url)
                 pq_caches.append(parquet_cache_chunk)
 
             # Reload once all parts completed and upload
             # --!-- Cannot load all into RAM! --!--
             # aggregator = pl.read_parquet(pq_caches)
+            print(
+                f"Making Arrow dataset from [{str(pq_caches[0])}, ...,\n{str(pq_caches[-1])}] (x{len(pq_caches)})"
+            )
             dataset = Dataset.from_parquet(
                 list(map(str, pq_caches)),
                 num_proc=n_cpus,
                 cache_dir=subset_arrow_cache_dir,  # 300GB+ of Arrow files per subset
             )
-            print(f"Made the dataset: {dataset}")
+            print(
+                f"Made the dataset: {dataset}, deleting intermediate parquet files..."
+            )
+            shutil.rmtree(subset_parquet_cache_dir)
             push_start_t = time.time()
             dataset.push_to_hub(
                 result_dataset_id,
