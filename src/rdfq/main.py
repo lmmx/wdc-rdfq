@@ -37,7 +37,7 @@ nq_pat = (
     r"(?P<subject><[^>]+>|_:[\w-]+)\s+"  # Subject: IRI or blank node
     r"(?P<predicate><[^>]+>)\s+"  # Predicate: IRI
     r"(?P<object>"  # Object can be one of:
-    r'"[^"]*(?:\\.[^"]*)*"(?:\^\^<[^>]+>)?|'  # Literal with optional datatype
+    r'"[^"]*(?:\\.[^"]*)*"(?:@[a-zA-Z-]+|\^\^<[^>]+>)?|'  # Literal with optional language tag or datatype
     r"<[^>]+>|"  # IRI
     r"_:[\w-]+"  # Blank node
     r")\s+"
