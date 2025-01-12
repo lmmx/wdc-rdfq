@@ -105,6 +105,8 @@ def process_all_years(repo_path: Path):
         try:
             if ds_subset_exists(result_dataset_id, subset):
                 print(f"Skipping {subset}")
+                shutil.rmtree(subset_parquet_cache_dir)
+                shutil.rmtree(subset_arrow_cache_dir)
                 continue
 
             urls_df = pl.read_csv(
