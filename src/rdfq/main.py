@@ -242,8 +242,8 @@ def upload_dataset(
     return
 
 
-def upload_file_to_hub(repo_id: str, local_path: Path, repo_path: str):
-    subprocess.run(
+def upload_file_to_hub(repo_id: str, local_path: Path, repo_path: str) -> None:
+    proc = subprocess.run(
         [
             "huggingface-cli",
             "upload",
@@ -254,8 +254,14 @@ def upload_file_to_hub(repo_id: str, local_path: Path, repo_path: str):
             repo_path,
         ],
         capture_output=True,
-        check=True,
     )
+    try:
+        proc.check_returncode()
+    except Exception:
+        dump = f"STDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}"
+        print(f"Error during upload:\n{dump}")
+        raise
+    return
 
 
 if __name__ == "__main__":
