@@ -128,7 +128,7 @@ def process_all_years(repo_path: Path):
             )
             urls = list(urls_df["url"])
 
-            is_complete = ds_subset_exists(result_dataset_id, subset, urls)
+            is_complete = ds_subset_exists(result_dataset_id, subset)
             if not is_complete:
                 # May be complete but without README metadata
                 is_complete, seen = ds_subset_complete(
