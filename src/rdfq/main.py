@@ -8,7 +8,7 @@ from functools import partial
 from pathlib import Path
 
 import polars as pl
-from datasets import Dataset, get_dataset_config_names
+from datasets import get_dataset_config_names
 from datasets.exceptions import DatasetNotFoundError
 from huggingface_hub import login
 from tqdm import tqdm
@@ -23,12 +23,10 @@ result_dataset_name = "wdc-common-crawl-embedded-jsonld"
 result_dataset_id = f"{username}/{result_dataset_name}"
 repo_id = "wbsg-uni-mannheim/wdc-page"
 REPO_URL = f"https://github.com/{repo_id}.git"
-usb_hdd = "/media/louis/Passport"
 
 n_cpus = mp.cpu_count()
 # If set, use `non_tmp_cache_dir` instead of /tmp for repo and intermediate pq files
 (non_tmp_cache_dir := Path.home() / ".cache" / "wdc-files").mkdir(exist_ok=True)
-(external_cache_dir := Path(usb_hdd) / "data" / "wdc-files").mkdir(exist_ok=True)
 # Make a specific dataset parquet cache dir to clear after an upload finishes (or fails)
 dataset_pq_cache_dir = non_tmp_cache_dir / "ds-pq-store"
 dataset_pq_cache_dir.mkdir(exist_ok=True)
@@ -69,8 +67,10 @@ def ds_subset_exists(dataset_id: str, subset_name: str) -> bool:
             raise
 
 
-def cap_nulls(df: pl.DataFrame, threshold=0) -> pl.DataFrame:
-    """If any of the columns have nulls in over `threshold` rows, halt the program."""
+def cap_nulls(df: pl.DataFrame, threshold=10) -> pl.DataFrame:
+    """If any of the columns have nulls in over `threshold` rows, halt the program.
+    Threshold is set to 10. Typically we see at most 2-4 is acceptable (HTML junk)
+    """
     null_rows = df.filter(pl.any_horizontal(pl.all().is_null()))
     if total_nulls := len(null_rows):
         assert (
@@ -98,15 +98,10 @@ def process_all_years(repo_path: Path):
         (subset_parquet_cache_dir := subset_cache_dir / "parquet").mkdir(exist_ok=True)
         ss_pq_cache_path = partial(make_cache_path, cache_dir=subset_parquet_cache_dir)
 
-        (subset_ext_c_dir := external_cache_dir / subset).mkdir(exist_ok=True)
-        # (subset_arrow_cache_dir := subset_cache_dir / "arrow").mkdir(exist_ok=True)
-        (subset_arrow_cache_dir := subset_ext_c_dir / "arrow").mkdir(exist_ok=True)
-
         try:
             if ds_subset_exists(result_dataset_id, subset):
                 print(f"Skipping {subset}")
                 shutil.rmtree(subset_cache_dir)  # subset_parquet_cache_dir
-                shutil.rmtree(subset_ext_c_dir)  # subset_arrow_cache_dir
                 continue
 
             urls_df = pl.read_csv(
@@ -134,46 +129,42 @@ def process_all_years(repo_path: Path):
                         comment_prefix="#",
                         new_columns=["line"],
                     ).select(parse_line)  # ).with_columns(parse_line) # for debugging
-                    df = cap_nulls(df, threshold=100)  # 2-4 is acceptable (HTML junk)
+                    df = cap_nulls(df)
                     df.write_parquet(parquet_cache_chunk)
                 return parquet_cache_chunk
 
-            for url in tqdm(list(urls_df["url"])):
+            urls = list(urls_df["url"])
+            for url in tqdm(urls):
                 parquet_cache_chunk = process_subset_chunk(url)
                 pq_caches.append(parquet_cache_chunk)
 
             # Reload once all parts completed and upload
             # --!-- Cannot load all into RAM! --!--
             # aggregator = pl.read_parquet(pq_caches)
-            print(
-                f"Making Arrow dataset from [{str(pq_caches[0])}, ...,\n{str(pq_caches[-1])}] (x{len(pq_caches)})"
-            )
-            dataset = Dataset.from_parquet(
-                list(map(str, pq_caches)),
-                num_proc=n_cpus,
-                cache_dir=subset_arrow_cache_dir,  # 300GB+ of Arrow files per subset
-            )
-            print(
-                f"Made the dataset: {dataset}, deleting intermediate parquet files..."
-            )
-            push_start_t = time.time()
-            dataset.push_to_hub(
-                result_dataset_id,
-                config_name=subset,
-                private=False,
-            )
-            push_end_t = time.time()
-            elapsed = timedelta(seconds=int(push_end_t - push_start_t))
+            upload_start_t = time.time()
+            upload_dataset(pq_caches, repo_id=result_dataset_id, config_name=subset)
+            # dataset = Dataset.from_parquet(
+            #     list(map(str, pq_caches)),
+            #     num_proc=n_cpus,
+            #     cache_dir=subset_arrow_cache_dir,  # 300GB+ of Arrow files per subset
+            # )
+            # print(
+            #     f"Made the dataset: {dataset}, deleting intermediate parquet files..."
+            # )
+            # dataset.push_to_hub(
+            #     result_dataset_id,
+            #     config_name=subset,
+            #     private=False,
+            # )
+            upload_end_t = time.time()
+            elapsed = timedelta(seconds=int(upload_end_t - upload_start_t))
             print(f"Successfully processed and uploaded {subset} in {elapsed}")
-            # Ensure we are definitely only deleting the parquet directory and .lock files
-            assert {"parquet"} == {
-                f.name for f in subset_arrow_cache_dir.iterdir() if f.suffix != ".lock"
-            }
             shutil.rmtree(subset_cache_dir)  # subset_parquet_cache_dir
-            shutil.rmtree(subset_ext_c_dir)  # subset_arrow_cache_dir
 
         except KeyboardInterrupt:
-            print("\nShutting down - current subset incomplete")
+            print(
+                "\nShutting down - current subset incomplete (please rewind the remote repo to re-upload it)"
+            )
             return
         except Exception as e:
             subset_log = cache_dir / f"{subset}.log"
@@ -187,8 +178,43 @@ def process_all_years(repo_path: Path):
                 formatted_entry = subset_log.read_text() + "\n\n\n" + formatted_entry
             subset_log.write_text(formatted_entry)
             # Do not continue in case the cache needs to be manually cleared
-            print("Halting to avoid creating multiple large Arrow caches")
+            print(
+                "Halting to avoid a missed file in the config (please rewind the remote repo to re-upload it)"
+            )
             raise  # raise
+
+
+def upload_dataset(
+    paths: list[Path], repo_id: str, config_name: str, split: str = "train"
+) -> None:
+    total = len(paths)
+    repo_path_prefix = f"{config_name}/{split}-"
+    for idx, path_to_upload in enumerate(
+        tqdm(paths, desc=f"Uploading {result_dataset_id}:{repo_path_prefix}*")
+    ):
+        config_split_index = f"{idx:05d}-of-{total:05d}"
+        upload_file_to_hub(
+            repo_id=repo_id,
+            local_path=path_to_upload,
+            repo_path=f"{repo_path_prefix}{config_split_index}.parquet",
+        )
+    return
+
+
+def upload_file_to_hub(repo_id: str, local_path: Path, repo_path: str):
+    subprocess.run(
+        [
+            "huggingface-cli",
+            "upload",
+            "--repo-type",
+            "dataset",
+            repo_id,
+            str(local_path),
+            repo_path,
+        ],
+        capture_output=True,
+        check=True,
+    )
 
 
 if __name__ == "__main__":
