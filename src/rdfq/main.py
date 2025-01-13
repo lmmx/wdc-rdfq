@@ -81,6 +81,30 @@ def cap_nulls(df: pl.DataFrame, threshold=10) -> pl.DataFrame:
     return df
 
 
+def ds_subset_complete(
+    repo_id: str, config_name: str, urls: list[str], split="train"
+) -> tuple[bool, int]:
+    """Try to read the lengths of every file in the subset.
+
+    Returns a boolean indicating whether or not the subset is complete, along with a
+    count of how many values were successfully read (indicating where to resume from).
+    """
+    total = len(urls)
+    repo_path_prefix = f"{config_name}/{split}-"
+    for idx, url in enumerate(tqdm(urls, desc=f"Scanning {repo_path_prefix}*.parquet")):
+        config_split_index = f"{idx:05d}-of-{total:05d}"
+        repo_path = f"{repo_path_prefix}{config_split_index}.parquet"
+        hf_url = f"hf://datasets/{repo_id}/{repo_path}"
+        try:
+            size = pl.scan_parquet(hf_url).select(pl.len()).collect().item()
+            assert size > 0
+        except Exception:
+            return False, idx
+        else:
+            pass
+    return True, total
+
+
 def process_all_years(repo_path: Path):
     ld_dir = repo_path / "structureddata"
     cache_dir = mktemp_cache_dir(id_path=repo_id, base_dir=non_tmp_cache_dir)
@@ -99,14 +123,23 @@ def process_all_years(repo_path: Path):
         ss_pq_cache_path = partial(make_cache_path, cache_dir=subset_parquet_cache_dir)
 
         try:
-            if ds_subset_exists(result_dataset_id, subset):
+            urls_df = pl.read_csv(
+                path, has_header=False, separator="\n", new_columns=["url"]
+            )
+            urls = list(urls_df["url"])
+
+            is_complete = ds_subset_exists(result_dataset_id, subset, urls)
+            if not is_complete:
+                # May be complete but without README metadata
+                is_complete, seen = ds_subset_complete(
+                    result_dataset_id, config_name=subset, urls=urls
+                )
+
+            if is_complete:
                 print(f"Skipping {subset}")
                 shutil.rmtree(subset_cache_dir)  # subset_parquet_cache_dir
                 continue
 
-            urls_df = pl.read_csv(
-                path, has_header=False, separator="\n", new_columns=["url"]
-            )
             pq_caches = []
 
             def process_subset_chunk(source_url: str) -> Path:
@@ -133,8 +166,10 @@ def process_all_years(repo_path: Path):
                     df.write_parquet(parquet_cache_chunk)
                 return parquet_cache_chunk
 
-            urls = list(urls_df["url"])
-            for url in tqdm(urls):
+            for idx, url in enumerate(tqdm(urls)):
+                if idx < seen:
+                    # Unpadded list (just skip the first `seen` entries)
+                    continue
                 parquet_cache_chunk = process_subset_chunk(url)
                 pq_caches.append(parquet_cache_chunk)
 
@@ -142,7 +177,9 @@ def process_all_years(repo_path: Path):
             # --!-- Cannot load all into RAM! --!--
             # aggregator = pl.read_parquet(pq_caches)
             upload_start_t = time.time()
-            upload_dataset(pq_caches, repo_id=result_dataset_id, config_name=subset)
+            upload_dataset(
+                pq_caches, repo_id=result_dataset_id, config_name=subset, resume=seen
+            )
             # dataset = Dataset.from_parquet(
             #     list(map(str, pq_caches)),
             #     num_proc=n_cpus,
@@ -185,14 +222,18 @@ def process_all_years(repo_path: Path):
 
 
 def upload_dataset(
-    paths: list[Path], repo_id: str, config_name: str, split: str = "train"
+    paths: list[Path],
+    repo_id: str,
+    config_name: str,
+    split: str = "train",
+    resume: int = 0,
 ) -> None:
-    total = len(paths)
+    total = len(paths) + resume
     repo_path_prefix = f"{config_name}/{split}-"
     for idx, path_to_upload in enumerate(
         tqdm(paths, desc=f"Uploading {result_dataset_id}:{repo_path_prefix}*")
     ):
-        config_split_index = f"{idx:05d}-of-{total:05d}"
+        config_split_index = f"{idx+resume:05d}-of-{total:05d}"
         upload_file_to_hub(
             repo_id=repo_id,
             local_path=path_to_upload,
