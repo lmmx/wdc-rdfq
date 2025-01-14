@@ -1,6 +1,7 @@
 import multiprocessing as mp
 import shutil
 import subprocess
+import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta
@@ -221,6 +222,36 @@ def process_all_years(repo_path: Path):
             raise  # raise
 
 
+def create_dataset_symlinks(
+    paths: list[Path],
+    config_name: str,
+    split: str = "train",
+    resume: int = 0,
+) -> Path:
+    """
+    Creates a temporary directory with symlinks to dataset files, organised in the
+    proper structure for `huggingface-cli upload-large-folder`.
+
+    Args:
+        paths: List of paths to parquet files to upload
+        config_name: Name of the config/subset within the dataset
+        split: Split name (e.g. 'train', 'test')
+        resume: Starting index for file numbering
+
+    Returns:
+        Path to the temporary directory containing the symlinks
+    """
+    temp_dir = Path(tempfile.mkdtemp())
+    config_dir = temp_dir / config_name
+    config_dir.mkdir(parents=True)
+    total = len(paths) + resume
+    for idx, source_path in enumerate(paths):
+        target_name = f"{split}-{idx+resume:05d}-of-{total:05d}.parquet"
+        target_path = config_dir / target_name
+        target_path.symlink_to(source_path.resolve())
+    return temp_dir
+
+
 def upload_dataset(
     paths: list[Path],
     repo_id: str,
@@ -228,39 +259,28 @@ def upload_dataset(
     split: str = "train",
     resume: int = 0,
 ) -> None:
-    total = len(paths) + resume
-    repo_path_prefix = f"{config_name}/{split}-"
-    for idx, path_to_upload in enumerate(
-        tqdm(paths, desc=f"Uploading {result_dataset_id}:{repo_path_prefix}*")
-    ):
-        config_split_index = f"{idx+resume:05d}-of-{total:05d}"
-        upload_file_to_hub(
-            repo_id=repo_id,
-            local_path=path_to_upload,
-            repo_path=f"{repo_path_prefix}{config_split_index}.parquet",
-        )
-    return
-
-
-def upload_file_to_hub(repo_id: str, local_path: Path, repo_path: str) -> None:
-    proc = subprocess.run(
-        [
-            "huggingface-cli",
-            "upload",
-            "--repo-type",
-            "dataset",
-            repo_id,
-            str(local_path),
-            repo_path,
-        ],
-        capture_output=True,
-    )
+    """Upload a dataset config via a temporary directory of properly named symlinks."""
     try:
+        temp_dir = create_dataset_symlinks(paths, config_name, split, resume)
+        proc = subprocess.run(
+            [
+                "huggingface-cli",
+                "upload-large-folder",
+                "--repo-type",
+                "dataset",
+                repo_id,
+                str(temp_dir),
+                "--include",
+                f"{config_name}/*.parquet",
+            ],
+            check=True,
+        )
         proc.check_returncode()
-    except Exception:
-        dump = f"STDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}"
-        print(f"Error during upload:\n{dump}")
+    except subprocess.CalledProcessError:
+        print(f"Error during upload")
         raise
+    finally:
+        shutil.rmtree(temp_dir)
     return
 
 
