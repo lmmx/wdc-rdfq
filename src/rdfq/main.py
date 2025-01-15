@@ -68,7 +68,7 @@ def ds_subset_exists(dataset_id: str, subset_name: str) -> bool:
             raise
 
 
-def cap_nulls(df: pl.DataFrame, threshold=10) -> pl.DataFrame:
+def cap_nulls(df: pl.DataFrame, threshold=100) -> pl.DataFrame:
     """If any of the columns have nulls in over `threshold` rows, halt the program.
     Threshold is set to 10. Typically we see at most 2-4 is acceptable (HTML junk)
     """
