@@ -82,6 +82,15 @@ def cap_nulls(df: pl.DataFrame, threshold=100) -> pl.DataFrame:
     return df
 
 
+def get_hf_url(
+    repo_id: str, config_name: str, idx: int, total: int, split: str = "train"
+) -> str:
+    config_split_index = f"{idx:05d}-of-{total:05d}"
+    repo_path = f"{config_name}/{split}-{config_split_index}.parquet"
+    hf_url = f"hf://datasets/{repo_id}/{repo_path}"
+    return hf_url
+
+
 def ds_subset_complete(
     repo_id: str, config_name: str, urls: list[str], split="train"
 ) -> tuple[bool, int]:
@@ -93,9 +102,9 @@ def ds_subset_complete(
     total = len(urls)
     repo_path_prefix = f"{config_name}/{split}-"
     for idx, url in enumerate(tqdm(urls, desc=f"Scanning {repo_path_prefix}*.parquet")):
-        config_split_index = f"{idx:05d}-of-{total:05d}"
-        repo_path = f"{repo_path_prefix}{config_split_index}.parquet"
-        hf_url = f"hf://datasets/{repo_id}/{repo_path}"
+        hf_url = get_hf_url(
+            repo_id=repo_id, config_name=config_name, split=split, idx=idx, total=total
+        )
         try:
             size = pl.scan_parquet(hf_url).select(pl.len()).collect().item()
             assert size > 0
@@ -106,7 +115,9 @@ def ds_subset_complete(
     return True, total
 
 
-def process_all_years(repo_path: Path):
+def process_all_years(
+    repo_path: Path, upload_in_batches: bool = True, batch_size: int = 3240
+):
     ld_dir = repo_path / "structureddata"
     cache_dir = mktemp_cache_dir(id_path=repo_id, base_dir=non_tmp_cache_dir)
     # dataset_cache_path = partial(make_cache_path, cache_dir=cache_dir)
@@ -174,29 +185,73 @@ def process_all_years(repo_path: Path):
                 parquet_cache_chunk = process_subset_chunk(url)
                 pq_caches.append(parquet_cache_chunk)
 
+                if upload_in_batches and len(pq_caches) >= batch_size:
+                    upload_start_t = time.time()
+                    upload_dataset(
+                        pq_caches,
+                        repo_id=result_dataset_id,
+                        config_name=subset,
+                        resume=seen,
+                        total=len(urls),
+                    )
+                    upload_end_t = time.time()
+                    elapsed = timedelta(seconds=int(upload_end_t - upload_start_t))
+                    print(f"Successfully processed and uploaded {subset} in {elapsed}")
+                    try:
+                        # Assume that if the last one was uploaded then all were
+                        seen += len(pq_caches)
+                        # Read that one here the same way we do in ds_subset_complete
+                        hf_url = get_hf_url(
+                            repo_id=result_dataset_id,
+                            config_name=subset,
+                            idx=idx,
+                            split="train",
+                            total=len(urls),
+                        )
+                        size = pl.scan_parquet(hf_url).select(pl.len()).collect().item()
+                        assert size > 0
+                    except Exception:
+                        # We cannot backtrack within this for loop, we must halt
+                        print(
+                            "Last file in batch not found: expected",
+                            f"train-{idx:05d}-of-{len(urls):05d}.parquet at {hf_url}",
+                        )
+                        raise
+                    else:
+                        # Delete the local parquet files, now they're uploaded, but not
+                        # the directory (else the forthcoming ones would have no home)
+                        for old_cache in pq_caches:
+                            old_cache.unlink()
+                        pq_caches = []
+
             # Reload once all parts completed and upload
             # --!-- Cannot load all into RAM! --!--
             # aggregator = pl.read_parquet(pq_caches)
-            upload_start_t = time.time()
-            upload_dataset(
-                pq_caches, repo_id=result_dataset_id, config_name=subset, resume=seen
-            )
-            # dataset = Dataset.from_parquet(
-            #     list(map(str, pq_caches)),
-            #     num_proc=n_cpus,
-            #     cache_dir=subset_arrow_cache_dir,  # 300GB+ of Arrow files per subset
-            # )
-            # print(
-            #     f"Made the dataset: {dataset}, deleting intermediate parquet files..."
-            # )
-            # dataset.push_to_hub(
-            #     result_dataset_id,
-            #     config_name=subset,
-            #     private=False,
-            # )
-            upload_end_t = time.time()
-            elapsed = timedelta(seconds=int(upload_end_t - upload_start_t))
-            print(f"Successfully processed and uploaded {subset} in {elapsed}")
+            if pq_caches:
+                upload_start_t = time.time()
+                upload_dataset(
+                    pq_caches,
+                    repo_id=result_dataset_id,
+                    config_name=subset,
+                    resume=seen,
+                    total=len(urls),
+                )
+                # dataset = Dataset.from_parquet(
+                #     list(map(str, pq_caches)),
+                #     num_proc=n_cpus,
+                #     cache_dir=subset_arrow_cache_dir,  # 300GB+ of Arrow files per subset
+                # )
+                # print(
+                #     f"Made the dataset: {dataset}, deleting intermediate parquet files..."
+                # )
+                # dataset.push_to_hub(
+                #     result_dataset_id,
+                #     config_name=subset,
+                #     private=False,
+                # )
+                upload_end_t = time.time()
+                elapsed = timedelta(seconds=int(upload_end_t - upload_start_t))
+                print(f"Successfully processed and uploaded {subset} in {elapsed}")
             shutil.rmtree(subset_cache_dir)  # subset_parquet_cache_dir
 
         except KeyboardInterrupt:
@@ -225,6 +280,7 @@ def process_all_years(repo_path: Path):
 def create_dataset_symlinks(
     paths: list[Path],
     config_name: str,
+    total: int,
     split: str = "train",
     resume: int = 0,
 ) -> Path:
@@ -244,7 +300,6 @@ def create_dataset_symlinks(
     temp_dir = Path(tempfile.mkdtemp())
     config_dir = temp_dir / config_name
     config_dir.mkdir(parents=True)
-    total = len(paths) + resume
     for idx, source_path in enumerate(paths):
         target_name = f"{split}-{idx+resume:05d}-of-{total:05d}.parquet"
         target_path = config_dir / target_name
@@ -256,12 +311,19 @@ def upload_dataset(
     paths: list[Path],
     repo_id: str,
     config_name: str,
+    total: int,
     split: str = "train",
     resume: int = 0,
 ) -> None:
     """Upload a dataset config via a temporary directory of properly named symlinks."""
     try:
-        temp_dir = create_dataset_symlinks(paths, config_name, split, resume)
+        temp_dir = create_dataset_symlinks(
+            paths=paths,
+            config_name=config_name,
+            total=total,
+            split=split,
+            resume=resume,
+        )
         proc = subprocess.run(
             [
                 "huggingface-cli",
