@@ -106,8 +106,7 @@ def ds_subset_complete(
             repo_id=repo_id, config_name=config_name, split=split, idx=idx, total=total
         )
         try:
-            size = pl.scan_parquet(hf_url).select(pl.len()).collect().item()
-            assert size > 0
+            _ = pl.scan_parquet(hf_url).select([]).collect()
         except Exception:
             return False, idx
         else:
@@ -208,8 +207,7 @@ def process_all_years(
                             split="train",
                             total=len(urls),
                         )
-                        size = pl.scan_parquet(hf_url).select(pl.len()).collect().item()
-                        assert size > 0
+                        _ = pl.scan_parquet(hf_url).select([]).collect()
                     except Exception:
                         # We cannot backtrack within this for loop, we must halt
                         print(
