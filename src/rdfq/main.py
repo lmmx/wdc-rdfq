@@ -116,7 +116,7 @@ def ds_subset_complete(
 
 
 def process_all_years(
-    repo_path: Path, upload_in_batches: bool = True, batch_size: int = 2750
+    repo_path: Path, upload_in_batches: bool = True, batch_size: int = 1500
 ):
     ld_dir = repo_path / "structureddata"
     cache_dir = mktemp_cache_dir(id_path=repo_id, base_dir=non_tmp_cache_dir)
