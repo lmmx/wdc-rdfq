@@ -101,17 +101,38 @@ def ds_subset_complete(
     """
     total = len(urls)
     repo_path_prefix = f"{config_name}/{split}-"
-    for idx, url in enumerate(tqdm(urls, desc=f"Scanning {repo_path_prefix}*.parquet")):
-        hf_url = get_hf_url(
-            repo_id=repo_id, config_name=config_name, split=split, idx=idx, total=total
-        )
-        try:
-            _ = pl.scan_parquet(hf_url).select([]).collect()
-        except Exception:
+    repo_path = f"{repo_path_prefix}*.parquet"
+    try:
+        hf_url = f"hf://datasets/{repo_id}/{repo_path}"
+        num_sources = count_sources(pl.scan_parquet(hf_url))
+        print(f"Detected {num_sources} files in {hf_url}")
+        if num_sources < total:
+            idx = num_sources - 1
+            assert idx > 0
             return False, idx
         else:
-            pass
-    return True, total
+            return True, total
+    except:
+        for idx, url in enumerate(tqdm(urls, desc=f"Scanning {repo_path}")):
+            hf_url = get_hf_url(
+                repo_id=repo_id,
+                config_name=config_name,
+                split=split,
+                idx=idx,
+                total=total,
+            )
+            try:
+                _ = pl.scan_parquet(hf_url).select([]).collect()
+            except Exception:
+                return False, idx
+            else:
+                pass
+        return True, total
+
+
+def count_sources(ldf) -> int:
+    plan = pl.Series([ldf.show_graph(raw_output=True)])
+    return 1 + plan.str.extract(r"(\d+) other sources", 1).str.to_integer().item()
 
 
 def process_all_years(
