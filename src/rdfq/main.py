@@ -106,12 +106,8 @@ def ds_subset_complete(
         hf_url = f"hf://datasets/{repo_id}/{repo_path}"
         num_sources = count_sources(pl.scan_parquet(hf_url))
         print(f"Detected {num_sources} files in {hf_url}")
-        if num_sources < total:
-            idx = num_sources - 1
-            assert idx > 0
-            return False, idx
-        else:
-            return True, total
+        assert (num_sources - 1) > 0
+        return num_sources == total, num_sources
     except:
         for idx, url in enumerate(tqdm(urls, desc=f"Scanning {repo_path}")):
             hf_url = get_hf_url(
