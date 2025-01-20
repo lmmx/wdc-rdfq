@@ -11,7 +11,7 @@ from pathlib import Path
 import polars as pl
 from datasets import get_dataset_config_names
 from datasets.exceptions import DatasetNotFoundError
-from huggingface_hub import login
+from huggingface_hub import list_repo_files, login
 from tqdm import tqdm
 
 from rdfq.core.caching import make_cache_path, mktemp_cache_dir
@@ -94,41 +94,17 @@ def get_hf_url(
 def ds_subset_complete(
     repo_id: str, config_name: str, urls: list[str], split="train"
 ) -> tuple[bool, int]:
-    """Try to read the lengths of every file in the subset.
-
-    Returns a boolean indicating whether or not the subset is complete, along with a
-    count of how many values were successfully read (indicating where to resume from).
-    """
+    """Return URLs for files in the subset split that don't exist yet in the repo."""
     total = len(urls)
     repo_path_prefix = f"{config_name}/{split}-"
-    repo_path = f"{repo_path_prefix}*.parquet"
-    try:
-        hf_url = f"hf://datasets/{repo_id}/{repo_path}"
-        num_sources = count_sources(pl.scan_parquet(hf_url))
-        print(f"Detected {num_sources} files in {hf_url}")
-        assert (num_sources - 1) > 0
-        return num_sources == total, num_sources
-    except:
-        for idx, url in enumerate(tqdm(urls, desc=f"Scanning {repo_path}")):
-            hf_url = get_hf_url(
-                repo_id=repo_id,
-                config_name=config_name,
-                split=split,
-                idx=idx,
-                total=total,
-            )
-            try:
-                _ = pl.scan_parquet(hf_url).select([]).collect()
-            except Exception:
-                return False, idx
-            else:
-                pass
-        return True, total
-
-
-def count_sources(ldf) -> int:
-    plan = pl.Series([ldf.show_graph(raw_output=True)])
-    return 1 + plan.str.extract(r"(\d+) other sources", 1).str.to_integer().item()
+    existing_subset_urls = {
+        f"hf://datasets/{repo_id}/{filepath}"
+        for filepath in list_repo_files(repo_id, repo_type="dataset")
+        if filepath.startswith(repo_path_prefix)
+    }
+    seen = len(existing_subset_urls)
+    is_complete = seen < total
+    return is_complete, seen
 
 
 def process_all_years(
