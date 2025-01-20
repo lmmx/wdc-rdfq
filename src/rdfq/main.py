@@ -103,7 +103,8 @@ def ds_subset_complete(
         if filepath.startswith(repo_path_prefix)
     }
     seen = len(existing_subset_urls)
-    is_complete = seen < total
+    print(f"Scanned {config_name}: {seen} of {total} seen")
+    is_complete = seen == total
     return is_complete, seen
 
 
